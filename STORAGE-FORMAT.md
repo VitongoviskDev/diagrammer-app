@@ -20,6 +20,7 @@ Nenhuma migração de `version` está configurada, então o valor é sempre `0`.
     "nodes": [],
     "edges": [],
     "enums": [],
+    "groups": [],
     "macModifierOverride": null,
     "showCardinality": true
   },
@@ -27,9 +28,11 @@ Nenhuma migração de `version` está configurada, então o valor é sempre `0`.
 }
 ```
 
-Só essas 5 chaves são persistidas. Qualquer outra coisa dentro de `state` é ignorada na leitura e some na próxima escrita da app.
+Só essas 6 chaves são persistidas. Qualquer outra coisa dentro de `state` é ignorada na leitura e some na próxima escrita da app.
 
 `macModifierOverride` e `showCardinality` são preferências de UI. **Podem ser omitidas** — os defaults (`null` e `true`) são aplicados. Não as invente; se você não quer mexer nelas, preserve o que já estava lá.
+
+Existe um estado `locked` na app (congela a edição do board), mas ele **não é persistido** de propósito. Não escreva.
 
 ### ⚠️ Regra operacional mais importante
 
@@ -41,7 +44,7 @@ Sequência correta: **escrever → recarregar a página**. Sem reload, assuma qu
 
 ## 2. Normalizações aplicadas na leitura
 
-Isto é novo e muda o que vale a pena escrever. Ao carregar (`merge` do persist) **e** ao importar um arquivo, a app aplica duas passadas:
+Ao carregar (`merge` do persist) **e** ao importar um arquivo, a app aplica duas passadas:
 
 ### `stripRuntimeState(nodes)`
 
@@ -65,7 +68,7 @@ else
           : { sourceHandle: 'top',    targetHandle: 'bottom' }
 ```
 
-Arestas que **já têm as duas âncoras são preservadas intactas** — ajustes manuais do usuário sobrevivem. Se a tabela de origem ou destino não existir na lista de nós, a aresta passa sem alteração (e vira uma aresta órfã: veja §5).
+Arestas que **já têm as duas âncoras são preservadas intactas** — ajustes manuais do usuário sobrevivem. Se a tabela de origem ou destino não existir na lista de nós, a aresta passa sem alteração (e vira uma aresta órfã: veja §6).
 
 **Consequência prática:** você pode omitir `sourceHandle`/`targetHandle` ao criar uma aresta e a app escolhe um lado coerente. Mas se quiser controle sobre em que lado o fio encosta, escreva os dois.
 
@@ -158,9 +161,54 @@ Comportamento da UI ao **marcar o checkbox PK**: força `unique: true` e `nullab
 }
 ```
 
+### Grupo (módulo visual)
+
+```jsonc
+{
+  "id": "grp_contas",
+  "name": "modulo_contas",
+  "position": { "x": 50, "y": 50 },
+  "width": 740,
+  "height": 340,
+  "color": "sky"      // slate | amber | sky | violet | rose | emerald
+}
+```
+
+Sem campo `type` — a app injeta o tipo do nó só na hora de renderizar.
+
 ---
 
-## 4. Convenção de relacionamentos
+## 4. Grupos não têm lista de membros
+
+Esta é a parte que mais foge do esperado, então leia antes de mexer em grupos.
+
+Um grupo é **só uma caixa desenhada atrás das tabelas**, para separar entidades por módulo. Não tem semântica de banco nenhuma. Ele não tem nenhum campo apontando para as tabelas que contém, e as tabelas não têm nenhum campo apontando para o grupo. Não existe `parentId`, `groupId` nem lista de ids em lugar nenhum.
+
+**Pertencer ao grupo é geometria pura, avaliada em tempo real:** uma tabela pertence ao grupo quando o retângulo dela cabe **inteiro** dentro do retângulo do grupo.
+
+```js
+dentro =
+  tabela.x                 >= grupo.x &&
+  tabela.y                 >= grupo.y &&
+  tabela.x + larguraTabela <= grupo.x + grupo.width &&
+  tabela.y + alturaTabela  <= grupo.y + grupo.height
+```
+
+Encostar ou entrar parcialmente **não conta**. A largura do card é fixa em 288; a altura varia com o número de colunas (a app usa 240 como palpite quando ainda não mediu).
+
+Consequências para quem escreve direto no storage:
+
+- **Para colocar uma tabela num módulo**, basta posicioná-la inteiramente dentro dos limites da caixa. Não há campo para setar.
+- **Para tirar**, mova a tabela para fora (ou redimensione a caixa).
+- **Coordenadas continuam absolutas.** Grupos não reparentam nada — a `position` de uma tabela dentro de um grupo é do mesmo espaço que a de qualquer outra.
+- **Excluir um grupo não afeta tabela nenhuma.** Some só a caixa.
+- **Grupos podem se sobrepor**, e uma tabela pode estar dentro de dois. Nada quebra.
+- **Relações ignoram grupos por completo.** Uma aresta cruzando a borda da caixa é normal.
+- Na UI, arrastar a caixa leva junto as tabelas que estavam inteiramente dentro dela **no instante em que o arraste começou**. Isso é comportamento de runtime, não dado salvo.
+
+---
+
+## 5. Convenção de relacionamentos
 
 A UI não cria só a aresta — ela mexe nas colunas. Para o diagrama ficar coerente, reproduza:
 
@@ -187,23 +235,24 @@ O `cardinality: "N:N"` só existe como opção no modal; nunca é gravado.
 
 ---
 
-## 5. Coisas que quebram o diagrama
+## 6. Coisas que quebram o diagrama
 
 - **Aresta órfã** — `source`/`target` apontando para um `id` de nó inexistente. O React Flow não renderiza a aresta e o reparo de âncoras a ignora. Nunca deixe.
-- **`enumId` pendurado** — coluna `type: "enum"` apontando para um `enums[].id` que não existe. O seletor fica vazio. Ao remover um enum, limpe o `enumId` de todas as colunas que o usavam (é o que `removeEnum` faz).
-- **`linkedEdgeId` pendurado** — coluna FK apontando para aresta removida. Ao remover uma aresta, remova também a coluna FK correspondente (a UI pede confirmação antes).
+- **`enumId` pendurado** — coluna `type: "enum"` apontando para um `enums[].id` que não existe. O seletor fica vazio. Ao remover um enum, limpe o `enumId` de todas as colunas que o usavam.
+- **`linkedEdgeId` pendurado** — coluna FK apontando para aresta removida. Ao remover uma aresta, remova também a coluna FK correspondente.
+- **Grupo com `width`/`height` ausente ou zero** — a caixa some ou vira um risco, e nenhuma tabela cabe dentro dela. A UI não deixa passar de 220×160 ao redimensionar; escritas diretas não são checadas.
 - **Nome de tabela duplicado** — a UI deduplica no blur; escritas diretas não são checadas.
 - **Nome começando com dígito** — a UI marca visualmente como inválido, mas não impede.
 - **Formatação de identificador** — a UI aplica `trim → espaços viram "_" → lowercase` ao sair do campo. Escreva já normalizado.
 
 ---
 
-## 6. Arquivo de export/import
+## 7. Arquivo de export/import
 
-O botão **Salvar** gera `diagrama-<AAAA-MM-DD_HHhMM>.json` com **três chaves apenas**:
+O botão **Salvar** gera `diagrama-<AAAA-MM-DD_HHhMM>.json` com **quatro chaves apenas**:
 
 ```json
-{ "nodes": [...], "edges": [...], "enums": [...] }
+{ "nodes": [...], "edges": [...], "enums": [...], "groups": [...] }
 ```
 
 Diferenças em relação ao `localStorage`:
@@ -214,15 +263,27 @@ Diferenças em relação ao `localStorage`:
 
 Importar **substitui** o diagrama inteiro e a UI pede confirmação quando já existem tabelas.
 
-Para converter arquivo → `localStorage`: envelope `{ "state": {...as 3 chaves...}, "version": 0 }`.
+Para converter arquivo → `localStorage`: envelope `{ "state": {...as 4 chaves...}, "version": 0 }`.
 
 ---
 
-## Changelog — o que mudou nesta rodada
+## Changelog
 
-Relevante para quem escreve no storage:
+### Rodada 2 — grupos
 
-1. **`partialize` cresceu.** Antes persistia `nodes`, `edges`, `enums`. Agora inclui também `macModifierOverride` e `showCardinality`. Ambas opcionais na escrita.
+1. **Chave nova: `groups`**, persistida e incluída no arquivo de export (que passou de 3 para 4 chaves). Um arquivo ou storage sem ela carrega normalmente — vira `[]`.
+
+2. **Agrupamento é geométrico, sem lista de membros.** Releia a §4 inteira antes de posicionar tabelas: não há campo vinculando tabela a grupo, e a contenção exige que o card caiba **inteiro** dentro da caixa.
+
+3. **Coordenadas seguem absolutas.** Grupos não usam `parentId` do React Flow e não reparentam nada, então nada do que já estava documentado sobre `position` de tabela mudou.
+
+4. **`locked`** existe no estado da app mas não é persistido.
+
+O esquema de nó, coluna, constraint, enum e aresta **continua sem mudanças**.
+
+### Rodada 1 — âncoras e normalização
+
+1. **`partialize` cresceu.** Antes persistia `nodes`, `edges`, `enums`. Passou a incluir também `macModifierOverride` e `showCardinality`. Ambas opcionais na escrita.
 
 2. **Leitura passou a normalizar (`stripRuntimeState`).** `measured`, `selected` e `dragging` são descartados ao carregar. Antes eram mantidos. **Pare de escrevê-los.**
 
@@ -233,5 +294,3 @@ Relevante para quem escreve no storage:
 5. **Enums ganharam edição e exclusão.** O esquema não mudou, mas: os `id` das opções são preservados ao editar, e excluir um enum limpa o `enumId` das colunas que o usavam.
 
 6. **`showCardinality: false`** esconde o card inteiro sobre os fios (cardinalidade + nome da FK + botão de remover), não só o badge. O card reaparece na aresta selecionada. É puramente visual — não altera nenhum dado do diagrama.
-
-O esquema de nó, coluna, constraint, enum e aresta **não mudou**. Um arquivo antigo continua carregando; só passa pela normalização.
