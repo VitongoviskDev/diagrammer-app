@@ -3,9 +3,12 @@ import type { EdgeChange, NodeChange, XYPosition } from '@xyflow/react'
 import { v4 as uuid } from 'uuid'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { GROUP_COLORS } from './types'
 import type {
+  BoardNode,
   EnumDef,
   EnumOption,
+  GroupDef,
   RelationCardinality,
   RelationshipData,
   RelationshipEdgeType,
@@ -73,6 +76,28 @@ function pickHandles(a: XYPosition, b: XYPosition) {
   return dy >= 0
     ? { sourceHandle: 'bottom', targetHandle: 'top' }
     : { sourceHandle: 'top', targetHandle: 'bottom' }
+}
+
+/** Fallback when a table hasn't been measured yet — the card is `w-72`. */
+const TABLE_WIDTH = 288
+
+/** Groups own no membership list: a table belongs to whichever box fully
+ *  contains it. Straddling an edge is not enough — the whole card has to fit
+ *  inside — so dragging a table in or out is just a matter of moving it.
+ *
+ *  The height fallback is deliberately generous rather than 0: an unmeasured
+ *  table would otherwise satisfy the bottom edge for free and get dragged
+ *  along unexpectedly. Erring towards leaving it out is the visible, easily
+ *  corrected mistake. */
+function isInsideGroup(node: TableNodeType, group: GroupDef) {
+  const width = node.measured?.width ?? TABLE_WIDTH
+  const height = node.measured?.height ?? 240
+  return (
+    node.position.x >= group.position.x &&
+    node.position.y >= group.position.y &&
+    node.position.x + width <= group.position.x + group.width &&
+    node.position.y + height <= group.position.y + group.height
+  )
 }
 
 /** Each edge end carries the anchor it attaches to (top/right/bottom/left).
@@ -276,6 +301,15 @@ interface DiagrammerState {
   nodes: TableNodeType[]
   edges: RelationshipEdgeType[]
   enums: EnumDef[]
+  groups: GroupDef[]
+  /** Snapshot taken when a group starts being dragged, so the tables it held
+   *  at that moment travel with it — recomputing mid-drag would let a table
+   *  fall out the back as the box slides off it. */
+  groupDrag: {
+    groupId: string
+    origin: XYPosition
+    tables: { id: string; position: XYPosition }[]
+  } | null
   relationRequest: RelationRequest | null
   newTableRelationRequest: NewTableRelationRequest | null
   linkingFrom: string | null
@@ -296,7 +330,7 @@ interface DiagrammerState {
    *  reopening a board you can't edit reads as broken. */
   locked: boolean
   justCreatedTableId: string | null
-  onNodesChange: (changes: NodeChange<TableNodeType>[]) => void
+  onNodesChange: (changes: NodeChange<BoardNode>[]) => void
   onEdgesChange: (changes: EdgeChange<RelationshipEdgeType>[]) => void
   onConnect: (connection: { source: string | null; target: string | null }) => void
   addTable: (position?: XYPosition) => string
@@ -341,6 +375,12 @@ interface DiagrammerState {
   setMacModifierOverride: (value: boolean | null) => void
   setShowCardinality: (value: boolean) => void
   setLocked: (value: boolean) => void
+  addGroup: () => void
+  updateGroup: (groupId: string, patch: Partial<Omit<GroupDef, 'id'>>) => void
+  removeGroup: (groupId: string) => void
+  beginGroupDrag: (groupId: string) => void
+  dragGroupTo: (groupId: string, position: XYPosition) => void
+  endGroupDrag: () => void
   removeEdgeById: (edgeId: string) => void
   requestRemoveEdge: (edgeId: string) => void
   startReconnecting: (state: ReconnectingState) => void
@@ -370,11 +410,13 @@ interface DiagrammerState {
     nodes: TableNodeType[]
     edges: RelationshipEdgeType[]
     enums: EnumDef[]
+    groups: GroupDef[]
   }
   importDiagram: (data: {
     nodes?: TableNodeType[]
     edges?: RelationshipEdgeType[]
     enums?: EnumDef[]
+    groups?: GroupDef[]
   }) => void
 }
 
@@ -384,6 +426,8 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       nodes: [],
       edges: [],
       enums: [],
+      groups: [],
+      groupDrag: null,
       relationRequest: null,
       newTableRelationRequest: null,
       linkingFrom: null,
@@ -400,8 +444,47 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       locked: false,
       justCreatedTableId: null,
 
+      // Groups ride along in the array handed to React Flow but live in their
+      // own slice, so their position/size changes are split off here instead
+      // of being fed to applyNodeChanges, which only knows about tables.
       onNodesChange: (changes) => {
-        set({ nodes: applyNodeChanges(changes, get().nodes) })
+        const groupIds = new Set(get().groups.map((g) => g.id))
+        // Anything left after the group ids are pulled out targets a table.
+        const asTableChanges = (list: NodeChange<BoardNode>[]) =>
+          list as NodeChange<TableNodeType>[]
+
+        if (groupIds.size === 0) {
+          set({ nodes: applyNodeChanges(asTableChanges(changes), get().nodes) })
+          return
+        }
+
+        const tableChanges: NodeChange<BoardNode>[] = []
+        let groups = get().groups
+        let groupsTouched = false
+
+        for (const change of changes) {
+          const id = 'id' in change ? change.id : undefined
+          if (!id || !groupIds.has(id)) {
+            tableChanges.push(change)
+            continue
+          }
+          if (change.type === 'position' && change.position) {
+            const { position } = change
+            groups = groups.map((g) => (g.id === id ? { ...g, position } : g))
+            groupsTouched = true
+          } else if (change.type === 'dimensions' && change.dimensions) {
+            const { dimensions } = change
+            groups = groups.map((g) =>
+              g.id === id ? { ...g, width: dimensions.width, height: dimensions.height } : g,
+            )
+            groupsTouched = true
+          }
+        }
+
+        set({
+          nodes: applyNodeChanges(asTableChanges(tableChanges), get().nodes),
+          ...(groupsTouched ? { groups } : {}),
+        })
       },
 
       onEdgesChange: (changes) => {
@@ -735,6 +818,88 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       setShowCardinality: (value) => set({ showCardinality: value }),
       setLocked: (value) => set({ locked: value }),
 
+      addGroup: () => {
+        const selected = get().nodes.filter((n) => n.selected)
+        const count = get().groups.length
+        const PADDING = 48
+        // Room for the title sitting above the tables.
+        const HEADER = 40
+
+        let position: XYPosition
+        let width = 520
+        let height = 360
+        if (selected.length > 0) {
+          // Wrap what's selected, which is the usual way a module gets drawn.
+          const lefts = selected.map((n) => n.position.x)
+          const tops = selected.map((n) => n.position.y)
+          const rights = selected.map((n) => n.position.x + (n.measured?.width ?? TABLE_WIDTH))
+          const bottoms = selected.map((n) => n.position.y + (n.measured?.height ?? 200))
+          const minX = Math.min(...lefts)
+          const minY = Math.min(...tops)
+          position = { x: minX - PADDING, y: minY - PADDING - HEADER }
+          width = Math.max(...rights) - minX + PADDING * 2
+          height = Math.max(...bottoms) - minY + PADDING * 2 + HEADER
+        } else {
+          position = { x: 60 + (count % 3) * 560, y: 60 + Math.floor(count / 3) * 420 }
+        }
+
+        set({
+          groups: [
+            ...get().groups,
+            {
+              id: uuid(),
+              name: `modulo_${count + 1}`,
+              position,
+              width,
+              height,
+              color: GROUP_COLORS[count % GROUP_COLORS.length],
+            },
+          ],
+        })
+      },
+
+      updateGroup: (groupId, patch) => {
+        set({
+          groups: get().groups.map((g) => (g.id === groupId ? { ...g, ...patch } : g)),
+        })
+      },
+
+      // Removing the box leaves the tables exactly where they are — the group
+      // never owned them.
+      removeGroup: (groupId) => {
+        set({ groups: get().groups.filter((g) => g.id !== groupId) })
+      },
+
+      beginGroupDrag: (groupId) => {
+        const group = get().groups.find((g) => g.id === groupId)
+        if (!group) return
+        set({
+          groupDrag: {
+            groupId,
+            origin: { ...group.position },
+            tables: get()
+              .nodes.filter((n) => isInsideGroup(n, group))
+              .map((n) => ({ id: n.id, position: { ...n.position } })),
+          },
+        })
+      },
+
+      dragGroupTo: (groupId, position) => {
+        const drag = get().groupDrag
+        if (!drag || drag.groupId !== groupId || drag.tables.length === 0) return
+        const dx = position.x - drag.origin.x
+        const dy = position.y - drag.origin.y
+        const starts = new Map(drag.tables.map((t) => [t.id, t.position]))
+        set({
+          nodes: get().nodes.map((n) => {
+            const start = starts.get(n.id)
+            return start ? { ...n, position: { x: start.x + dx, y: start.y + dy } } : n
+          }),
+        })
+      },
+
+      endGroupDrag: () => set({ groupDrag: null }),
+
       removeEdgeById: (edgeId) => {
         set({ edges: get().edges.filter((e) => e.id !== edgeId) })
       },
@@ -832,9 +997,9 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       },
 
       getExportData: () => {
-        const { nodes, edges, enums } = get()
+        const { nodes, edges, enums, groups } = get()
         const clean = stripRuntimeState(nodes)
-        return { nodes: clean, edges: withResolvedHandles(edges, clean), enums }
+        return { nodes: clean, edges: withResolvedHandles(edges, clean), enums, groups }
       },
 
       importDiagram: (data) => {
@@ -843,6 +1008,8 @@ export const useDiagrammerStore = create<DiagrammerState>()(
           nodes,
           edges: withResolvedHandles(data.edges ?? [], nodes),
           enums: data.enums ?? [],
+          groups: data.groups ?? [],
+          groupDrag: null,
           relationRequest: null,
           newTableRelationRequest: null,
           linkingFrom: null,
@@ -861,6 +1028,7 @@ export const useDiagrammerStore = create<DiagrammerState>()(
         nodes: state.nodes,
         edges: state.edges,
         enums: state.enums,
+        groups: state.groups,
         macModifierOverride: state.macModifierOverride,
         showCardinality: state.showCardinality,
       }),
@@ -877,6 +1045,7 @@ export const useDiagrammerStore = create<DiagrammerState>()(
           nodes,
           edges: withResolvedHandles(persisted.edges ?? [], nodes),
           enums: persisted.enums ?? [],
+          groups: persisted.groups ?? [],
         }
       },
     },

@@ -1,4 +1,4 @@
-import type { Edge, Node } from '@xyflow/react'
+import type { Edge, Node, XYPosition } from '@xyflow/react'
 
 export const COLUMN_TYPES = [
   'string',
@@ -64,5 +64,29 @@ export interface RelationshipData extends Record<string, unknown> {
   fkName: string
 }
 
+export const GROUP_COLORS = ['slate', 'amber', 'sky', 'violet', 'rose', 'emerald'] as const
+
+export type GroupColor = (typeof GROUP_COLORS)[number]
+
+/** A purely visual box used to separate entities into modules. It holds no
+ *  membership list: whichever tables sit inside its bounds belong to it, the
+ *  same way they'd sit anywhere else on the board. */
+export interface GroupDef {
+  id: string
+  name: string
+  position: XYPosition
+  width: number
+  height: number
+  color: GroupColor
+}
+
+export interface GroupData extends Record<string, unknown> {
+  name: string
+  color: GroupColor
+}
+
 export type TableNodeType = Node<TableData, 'table'>
+export type GroupNodeType = Node<GroupData, 'moduleBox'>
+/** What the board actually renders: tables plus the group boxes behind them. */
+export type BoardNode = TableNodeType | GroupNodeType
 export type RelationshipEdgeType = Edge<RelationshipData, 'relationship'>

@@ -14,11 +14,12 @@ import {
   type EdgeTypes,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { CircleQuestionMark, Download, Plus, Upload, Waypoints, X } from 'lucide-react'
+import { CircleQuestionMark, Download, Group, Plus, Upload, Waypoints, X } from 'lucide-react'
 import { useDiagrammerStore } from '@/store'
 import { isModifierKey } from '@/lib/platform'
-import type { RelationshipEdgeType } from '@/types'
+import type { BoardNode, RelationshipEdgeType } from '@/types'
 import { TableNode } from '@/components/TableNode'
+import { GroupNode } from '@/components/GroupNode'
 import { RelationshipEdge } from '@/components/RelationshipEdge'
 import { RelationModal } from '@/components/RelationModal'
 import { ConfirmColumnDeleteDialog } from '@/components/ConfirmColumnDeleteDialog'
@@ -38,7 +39,7 @@ import { MAX_ZOOM, MIN_ZOOM } from '@/lib/zoom'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 
-const nodeTypes: NodeTypes = { table: TableNode }
+const nodeTypes: NodeTypes = { table: TableNode, moduleBox: GroupNode }
 const edgeTypes: EdgeTypes = { relationship: RelationshipEdge }
 
 function isTypingTarget(target: EventTarget | null) {
@@ -108,6 +109,11 @@ function Board() {
   const showCardinality = useDiagrammerStore((s) => s.showCardinality)
   const setShowCardinality = useDiagrammerStore((s) => s.setShowCardinality)
   const locked = useDiagrammerStore((s) => s.locked)
+  const groups = useDiagrammerStore((s) => s.groups)
+  const addGroup = useDiagrammerStore((s) => s.addGroup)
+  const beginGroupDrag = useDiagrammerStore((s) => s.beginGroupDrag)
+  const dragGroupTo = useDiagrammerStore((s) => s.dragGroupTo)
+  const endGroupDrag = useDiagrammerStore((s) => s.endGroupDrag)
 
   useGestureKeys()
   const rf = useReactFlow()
@@ -171,6 +177,48 @@ function Board() {
       reader.readAsText(file)
     },
     [importDiagram],
+  )
+
+  // Groups are projected into the node array React Flow renders, but stay in
+  // their own store slice. zIndex -1 keeps the box behind the tables and the
+  // wires; they're not selectable, so there's no selection state to carry.
+  const displayNodes = useMemo<BoardNode[]>(
+    () => [
+      ...groups.map((g) => ({
+        id: g.id,
+        type: 'moduleBox' as const,
+        position: g.position,
+        width: g.width,
+        height: g.height,
+        data: { name: g.name, color: g.color },
+        zIndex: -1,
+        selectable: false,
+        draggable: !locked,
+      })),
+      ...nodes,
+    ],
+    [groups, nodes, locked],
+  )
+
+  const handleNodeDragStart = useCallback(
+    (_: MouseEvent | TouchEvent, node: BoardNode) => {
+      if (node.type === 'moduleBox') beginGroupDrag(node.id)
+    },
+    [beginGroupDrag],
+  )
+
+  const handleNodeDrag = useCallback(
+    (_: MouseEvent | TouchEvent, node: BoardNode) => {
+      if (node.type === 'moduleBox') dragGroupTo(node.id, node.position)
+    },
+    [dragGroupTo],
+  )
+
+  const handleNodeDragStop = useCallback(
+    (_: MouseEvent | TouchEvent, node: BoardNode) => {
+      if (node.type === 'moduleBox') endGroupDrag()
+    },
+    [endGroupDrag],
   )
 
   const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes])
@@ -357,9 +405,12 @@ function Board() {
       onMouseDown={handleWrapperMouseDown}
     >
       <ReactFlow
-        nodes={nodes}
+        nodes={displayNodes}
         edges={displayEdges}
         onNodesChange={onNodesChange}
+        onNodeDragStart={handleNodeDragStart}
+        onNodeDrag={handleNodeDrag}
+        onNodeDragStop={handleNodeDragStop}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={handleConnectEnd}
@@ -409,6 +460,19 @@ function Board() {
               title="Selecione 2 tabelas (shift+clique) para habilitar"
             >
               <Waypoints className="size-4" /> Criar relação
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="gap-1"
+              onClick={addGroup}
+              title={
+                selectedNodes.length > 0
+                  ? 'Criar um grupo envolvendo as tabelas selecionadas'
+                  : 'Criar um grupo vazio (selecione tabelas antes para envolvê-las)'
+              }
+            >
+              <Group className="size-4" /> Grupo
             </Button>
             <Button
               size="sm"
