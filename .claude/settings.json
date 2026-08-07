@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(perl -pi -e 's/\\\\bctrlHeld\\\\b/modHeld/g; s/\\\\bsetCtrlHeld\\\\b/setModHeld/g' src/store.ts src/components/TableNode.tsx)",
+      "Bash(perl -pi -e 's/\\\\bctrlHeld\\\\b/modHeld/g; s/\\\\bsetCtrlHeld\\\\b/setModHeld/g' src/App.tsx)",
+      "Bash(echo \"--- tsc exit: $? ---\")",
+      "Bash(npx oxlint *)",
+      "Bash(echo \"--- exit $? ---\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5174/)",
+      "Bash(\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\" --headless --disable-gpu --no-sandbox --virtual-time-budget=5000 --dump-dom \"http://localhost:5174/\")"
+    ]
+  }
+}

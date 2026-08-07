@@ -15,8 +15,9 @@ import {
   type EdgeTypes,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Download, Plus, Upload, Waypoints, X } from 'lucide-react'
+import { CircleQuestionMark, Download, Plus, Upload, Waypoints, X } from 'lucide-react'
 import { useDiagrammerStore } from '@/store'
+import { isModifierKey } from '@/lib/platform'
 import type { RelationshipEdgeType } from '@/types'
 import { TableNode } from '@/components/TableNode'
 import { RelationshipEdge } from '@/components/RelationshipEdge'
@@ -31,7 +32,10 @@ import {
   PaneContextMenu,
   type PaneContextMenuState,
 } from '@/components/PaneContextMenu'
+import { ShortcutsModal } from '@/components/ShortcutsModal'
+import { Sidebar } from '@/components/Sidebar'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 
 const nodeTypes: NodeTypes = { table: TableNode }
 const edgeTypes: EdgeTypes = { relationship: RelationshipEdge }
@@ -41,8 +45,12 @@ function isTypingTarget(target: EventTarget | null) {
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable
 }
 
-/** Tracks Space (pan mode) and Ctrl (reconnect/move mode) while held, in the store
- *  so any component (Board, TableNode) can react to them. */
+/** Tracks Space (pan mode) and the modifier — ⌘ or Ctrl — (reconnect/move mode)
+ *  while held, in the store so any component (Board, TableNode) can react.
+ *
+ *  Both modifier keys are accepted rather than the platform's "correct" one:
+ *  platform detection only drives the labels, so a browser that misreports it
+ *  can't leave the gesture unreachable. */
 function useGestureKeys() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -50,17 +58,22 @@ function useGestureKeys() {
         if (isTypingTarget(e.target)) return
         e.preventDefault()
         useDiagrammerStore.getState().setSpaceHeld(true)
-      } else if (e.key === 'Control') {
-        useDiagrammerStore.getState().setCtrlHeld(true)
+      } else if (isModifierKey(e.key)) {
+        useDiagrammerStore.getState().setModHeld(true)
       }
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') useDiagrammerStore.getState().setSpaceHeld(false)
-      else if (e.key === 'Control') useDiagrammerStore.getState().setCtrlHeld(false)
+      else if (isModifierKey(e.key)) {
+        useDiagrammerStore.getState().setModHeld(false)
+        // macOS never delivers keyup for other keys while ⌘ is down, so a Space
+        // released during that window would leave pan mode stuck on.
+        if (e.key === 'Meta') useDiagrammerStore.getState().setSpaceHeld(false)
+      }
     }
     const onBlur = () => {
       useDiagrammerStore.getState().setSpaceHeld(false)
-      useDiagrammerStore.getState().setCtrlHeld(false)
+      useDiagrammerStore.getState().setModHeld(false)
     }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
@@ -90,22 +103,30 @@ function Board() {
   const reconnectEdge = useDiagrammerStore((s) => s.reconnectEdge)
   const isReconnectValid = useDiagrammerStore((s) => s.isReconnectValid)
   const spaceHeld = useDiagrammerStore((s) => s.spaceHeld)
-  const ctrlHeld = useDiagrammerStore((s) => s.ctrlHeld)
+  const modHeld = useDiagrammerStore((s) => s.modHeld)
+  const showCardinality = useDiagrammerStore((s) => s.showCardinality)
+  const setShowCardinality = useDiagrammerStore((s) => s.setShowCardinality)
 
   useGestureKeys()
   const rf = useReactFlow()
   const [paneMenu, setPaneMenu] = useState<PaneContextMenuState | null>(null)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+
+  // "?" opens the shortcuts panel from anywhere on the board.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== '?' || isTypingTarget(e.target)) return
+      e.preventDefault()
+      setShortcutsOpen(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const handleAddTable = useCallback(() => addTable(), [addTable])
 
   const handleExport = useCallback(() => {
-    const { nodes: currentNodes, edges: currentEdges, enums: currentEnums } =
-      useDiagrammerStore.getState()
-    const json = JSON.stringify(
-      { nodes: currentNodes, edges: currentEdges, enums: currentEnums },
-      null,
-      2,
-    )
+    const json = JSON.stringify(useDiagrammerStore.getState().getExportData(), null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -152,10 +173,11 @@ function Board() {
 
   const selectedNodes = useMemo(() => nodes.filter((n) => n.selected), [nodes])
   const hasSelectedEdge = useMemo(() => edges.some((e) => e.selected), [edges])
-  // Reconnect anchors only become draggable while Ctrl is held on a selected edge.
+  // Reconnect anchors only become draggable while the platform modifier
+  // (Ctrl / ⌘) is held on a selected edge.
   const displayEdges = useMemo(
-    () => edges.map((e) => ({ ...e, reconnectable: ctrlHeld && !!e.selected })),
-    [edges, ctrlHeld],
+    () => edges.map((e) => ({ ...e, reconnectable: modHeld && !!e.selected })),
+    [edges, modHeld],
   )
   const linkingFromNode = linkingFrom
     ? nodes.find((n) => n.id === linkingFrom)
@@ -184,7 +206,7 @@ function Board() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [linkingFrom, cancelLinking])
 
-  // Ctrl+drag (from anywhere) moves the current selection.
+  // Modifier+drag (from anywhere) moves the current selection.
   const moveDragRef = useRef<{
     startFlowX: number
     startFlowY: number
@@ -227,9 +249,9 @@ function Board() {
 
   const handleWrapperMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (!ctrlHeld || e.button !== 0) return
-      // While an edge is selected, Ctrl+drag is reserved for reconnecting its
-      // endpoints (via React Flow's own anchors) — not for moving tables.
+      if (!modHeld || e.button !== 0) return
+      // While an edge is selected, modifier+drag is reserved for reconnecting
+      // its endpoints (via React Flow's own anchors) — not for moving tables.
       const hasSelectedEdge = useDiagrammerStore.getState().edges.some((ed) => ed.selected)
       if (hasSelectedEdge) return
       const selected = useDiagrammerStore.getState().nodes.filter((n) => n.selected)
@@ -244,7 +266,7 @@ function Board() {
       window.addEventListener('mousemove', handleWindowMouseMove)
       window.addEventListener('mouseup', handleWindowMouseUp)
     },
-    [ctrlHeld, rf, handleWindowMouseMove, handleWindowMouseUp],
+    [modHeld, rf, handleWindowMouseMove, handleWindowMouseUp],
   )
 
   useEffect(
@@ -320,10 +342,10 @@ function Board() {
     [isReconnectValid],
   )
 
-  // Locking node pointer-events is only for the "Space pans" / "Ctrl moves
-  // tables" gestures — while reconnecting an edge (Ctrl + selected edge),
+  // Locking node pointer-events is only for the "Space pans" / "modifier moves
+  // tables" gestures — while reconnecting an edge (modifier + selected edge),
   // nodes must stay interactive so the drag can drop onto a handle.
-  const moveTablesLockActive = ctrlHeld && !hasSelectedEdge
+  const moveTablesLockActive = modHeld && !hasSelectedEdge
   const gestureLocked = spaceHeld || moveTablesLockActive
 
   return (
@@ -350,7 +372,12 @@ function Board() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         multiSelectionKeyCode="Shift"
-        selectionOnDrag={!spaceHeld && !ctrlHeld}
+        // React Flow's own auto-pan re-centers a focused node with no duration,
+        // which teleports the viewport and cuts off the animated pan the
+        // sidebar triggers. The sidebar is the only thing that moves us to a
+        // table, so let it own the transition.
+        autoPanOnNodeFocus={false}
+        selectionOnDrag={!spaceHeld && !modHeld}
         selectionMode={SelectionMode.Full}
         panOnDrag={spaceHeld}
         connectionMode={ConnectionMode.Loose}
@@ -400,8 +427,26 @@ function Board() {
               className="hidden"
               onChange={handleFileSelected}
             />
+            <label
+              className="flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground select-none hover:text-foreground"
+              title="Mostrar ou ocultar o card de cardinalidade nos fios de relação (some do fio, mas reaparece ao selecioná-lo)"
+            >
+              <Switch checked={showCardinality} onCheckedChange={setShowCardinality} />
+              Cardinalidade
+            </label>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setShortcutsOpen(true)}
+              title="Atalhos e gestos (?)"
+            >
+              <CircleQuestionMark className="size-4" />
+              <span className="sr-only">Atalhos e gestos</span>
+            </Button>
           </div>
         </Panel>
+        <Sidebar />
         {linkingFromNode && (
           <Panel position="top-center">
             <div className="flex items-center gap-2 rounded-lg border border-primary bg-card px-3 py-1.5 text-sm shadow-md">
@@ -427,6 +472,7 @@ function Board() {
         <ConstraintModal />
         <EnumModal />
         <TableDetailModal />
+        <ShortcutsModal open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </ReactFlow>
       {paneMenu && (
         <PaneContextMenu

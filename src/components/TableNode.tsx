@@ -39,7 +39,7 @@ export function TableNode({ id, data, selected }: NodeProps<TableNodeType>) {
   const isLinkingSource = linkingFrom === id
   const reconnecting = useDiagrammerStore((s) => s.reconnecting)
   const edges = useDiagrammerStore((s) => s.edges)
-  const ctrlHeld = useDiagrammerStore((s) => s.ctrlHeld)
+  const modHeld = useDiagrammerStore((s) => s.modHeld)
   const justCreatedTableId = useDiagrammerStore((s) => s.justCreatedTableId)
   const clearJustCreatedTable = useDiagrammerStore((s) => s.clearJustCreatedTable)
 
@@ -61,9 +61,10 @@ export function TableNode({ id, data, selected }: NodeProps<TableNodeType>) {
   const isReconnectTarget = reconnecting?.allowedTableId === id
   const isReconnectDimmed = reconnecting !== null && !isReconnectTarget
 
-  // Before a reconnect drag starts: while Ctrl is held on a single selected
-  // edge, show a "grab me" outward ring on the handle it currently uses.
-  const selectedEdges = ctrlHeld && !reconnecting ? edges.filter((e) => e.selected) : []
+  // Before a reconnect drag starts: while the platform modifier (Ctrl / ⌘) is
+  // held on a single selected edge, show a "grab me" outward ring on the
+  // handle it currently uses.
+  const selectedEdges = modHeld && !reconnecting ? edges.filter((e) => e.selected) : []
   const selectedEdge = selectedEdges.length === 1 ? selectedEdges[0] : undefined
   const grabbableHandle =
     selectedEdge?.source === id

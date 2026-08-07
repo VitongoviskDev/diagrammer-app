@@ -75,6 +75,38 @@ function pickHandles(a: XYPosition, b: XYPosition) {
     : { sourceHandle: 'top', targetHandle: 'bottom' }
 }
 
+/** Each edge end carries the anchor it attaches to (top/right/bottom/left).
+ *  A file written without them — by hand, or by a build from before they were
+ *  stored — leaves React Flow to pick anchors on its own, which is what makes
+ *  the wires come back attached to the wrong sides. Fill only the gaps, using
+ *  the same rule applied when a relationship is first created; edges that
+ *  already carry both anchors are left untouched so manual reconnections and
+ *  hand-placed wires survive the round trip. */
+function withResolvedHandles(
+  edges: RelationshipEdgeType[],
+  nodes: TableNodeType[],
+): RelationshipEdgeType[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  return edges.map((e) => {
+    if (e.sourceHandle && e.targetHandle) return e
+    const source = byId.get(e.source)
+    const target = byId.get(e.target)
+    if (!source || !target) return e
+    return { ...e, ...pickHandles(source.position, target.position) }
+  })
+}
+
+/** `measured`, `selected` and `dragging` are React Flow runtime state, not
+ *  diagram content. Carrying them across a save/load means the anchors get
+ *  placed from dimensions that may no longer match the card actually rendered
+ *  — the board re-measures on mount, so drop them and let it. */
+function stripRuntimeState(nodes: TableNodeType[]): TableNodeType[] {
+  return nodes.map(({ measured: _measured, selected: _selected, dragging: _dragging, ...n }) => ({
+    ...n,
+    data: { ...n.data, constraints: n.data.constraints ?? [] },
+  }))
+}
+
 function makeRelationshipEdge(
   id: string,
   sourceId: string,
@@ -210,9 +242,17 @@ export interface ReconnectingState {
   excludeHandleId?: string | null
 }
 
-export interface EnumModalRequest {
-  tableId: string
-  columnId: string
+/** The enum modal is either creating a new enum — assigned to the column that
+ *  asked for it, when there is one — or editing an existing one in place. */
+export type EnumModalRequest =
+  | { mode: 'create'; target?: { tableId: string; columnId: string } }
+  | { mode: 'edit'; enumId: string }
+
+/** An option being saved: existing ones keep their id, new ones get one. */
+export interface EnumOptionDraft {
+  id?: string
+  label: string
+  value: string
 }
 
 export interface CreateRelationshipParams {
@@ -246,7 +286,11 @@ interface DiagrammerState {
   enumModalRequest: EnumModalRequest | null
   tableDetailId: string | null
   spaceHeld: boolean
-  ctrlHeld: boolean
+  modHeld: boolean
+  /** null = trust platform detection; true/false = corrected from the shortcuts panel. */
+  macModifierOverride: boolean | null
+  /** Whether relationship edges show their cardinality badge. */
+  showCardinality: boolean
   justCreatedTableId: string | null
   onNodesChange: (changes: NodeChange<TableNodeType>[]) => void
   onEdgesChange: (changes: EdgeChange<RelationshipEdgeType>[]) => void
@@ -255,6 +299,7 @@ interface DiagrammerState {
   clearJustCreatedTable: () => void
   moveNodesTo: (updates: { id: string; position: XYPosition }[]) => void
   removeTable: (id: string) => void
+  selectTable: (tableId: string, additive?: boolean) => void
   requestRemoveTable: (tableId: string) => void
   confirmRemoveTable: () => void
   cancelRemoveTable: () => void
@@ -279,10 +324,18 @@ interface DiagrammerState {
   addConstraint: (tableId: string, name: string, columnIds: string[]) => void
   removeConstraint: (tableId: string, constraintId: string) => void
   openEnumModal: (tableId: string, columnId: string) => void
+  openEnumCreator: () => void
+  openEnumEditor: (enumId: string) => void
   closeEnumModal: () => void
   createEnum: (name: string, options: Omit<EnumOption, 'id'>[]) => void
+  updateEnum: (enumId: string, name: string, options: EnumOptionDraft[]) => void
+  renameEnum: (enumId: string, name: string) => void
+  removeEnum: (enumId: string) => void
+  countEnumUsage: (enumId: string) => number
   setSpaceHeld: (held: boolean) => void
-  setCtrlHeld: (held: boolean) => void
+  setModHeld: (held: boolean) => void
+  setMacModifierOverride: (value: boolean | null) => void
+  setShowCardinality: (value: boolean) => void
   removeEdgeById: (edgeId: string) => void
   requestRemoveEdge: (edgeId: string) => void
   startReconnecting: (state: ReconnectingState) => void
@@ -305,6 +358,14 @@ interface DiagrammerState {
   requestNewTableRelation: (originId: string, position: XYPosition) => void
   closeNewTableRelation: () => void
   createTableWithRelationship: (params: CreateTableWithRelationshipParams) => void
+  /** The diagram as it should be written to a file: runtime-only node state
+   *  dropped and every edge's anchors resolved, so reopening it puts the wires
+   *  back on the same sides. */
+  getExportData: () => {
+    nodes: TableNodeType[]
+    edges: RelationshipEdgeType[]
+    enums: EnumDef[]
+  }
   importDiagram: (data: {
     nodes?: TableNodeType[]
     edges?: RelationshipEdgeType[]
@@ -328,7 +389,9 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       enumModalRequest: null,
       tableDetailId: null,
       spaceHeld: false,
-      ctrlHeld: false,
+      modHeld: false,
+      macModifierOverride: null,
+      showCardinality: true,
       justCreatedTableId: null,
 
       onNodesChange: (changes) => {
@@ -372,6 +435,25 @@ export const useDiagrammerStore = create<DiagrammerState>()(
         set({
           nodes: get().nodes.filter((n) => n.id !== id),
           edges: get().edges.filter((e) => e.source !== id && e.target !== id),
+        })
+      },
+
+      /** Board selection driven from outside the canvas (the sidebar list).
+       *  Nodes whose flag doesn't change keep their identity, so picking one
+       *  table doesn't re-render every other one. */
+      selectTable: (tableId, additive = false) => {
+        set({
+          nodes: get().nodes.map((n) => {
+            const selected = additive
+              ? n.id === tableId
+                ? !n.selected
+                : !!n.selected
+              : n.id === tableId
+            return selected === !!n.selected ? n : { ...n, selected }
+          }),
+          edges: additive
+            ? get().edges
+            : get().edges.map((e) => (e.selected ? { ...e, selected: false } : e)),
         })
       },
 
@@ -556,7 +638,10 @@ export const useDiagrammerStore = create<DiagrammerState>()(
         })
       },
 
-      openEnumModal: (tableId, columnId) => set({ enumModalRequest: { tableId, columnId } }),
+      openEnumModal: (tableId, columnId) =>
+        set({ enumModalRequest: { mode: 'create', target: { tableId, columnId } } }),
+      openEnumCreator: () => set({ enumModalRequest: { mode: 'create' } }),
+      openEnumEditor: (enumId) => set({ enumModalRequest: { mode: 'edit', enumId } }),
       closeEnumModal: () => set({ enumModalRequest: null }),
 
       createEnum: (name, options) => {
@@ -569,13 +654,79 @@ export const useDiagrammerStore = create<DiagrammerState>()(
           options: validOptions.map((o) => ({ ...o, id: uuid() })),
         }
         set({ enums: [...get().enums, enumDef], enumModalRequest: null })
-        if (request) {
-          get().updateColumn(request.tableId, request.columnId, { enumId: enumDef.id })
+        // Only assign the new enum when a column asked for it; created from the
+        // sidebar there is no target and the enum just joins the list.
+        if (request?.mode === 'create' && request.target) {
+          get().updateColumn(request.target.tableId, request.target.columnId, {
+            enumId: enumDef.id,
+          })
         }
       },
 
+      updateEnum: (enumId, name, options) => {
+        const validOptions = options.filter((o) => o.label && o.value)
+        if (!name || validOptions.length === 0) return
+        set({
+          enums: get().enums.map((en) =>
+            en.id === enumId
+              ? {
+                  ...en,
+                  name,
+                  // Options keep their id when they already existed, so columns
+                  // and diagrams referencing them stay stable across an edit.
+                  options: validOptions.map((o) => ({
+                    id: o.id ?? uuid(),
+                    label: o.label,
+                    value: o.value,
+                  })),
+                }
+              : en,
+          ),
+          enumModalRequest: null,
+        })
+      },
+
+      renameEnum: (enumId, name) => {
+        set({
+          enums: get().enums.map((en) => (en.id === enumId ? { ...en, name } : en)),
+        })
+      },
+
+      removeEnum: (enumId) => {
+        const request = get().enumModalRequest
+        set({
+          enums: get().enums.filter((en) => en.id !== enumId),
+          // Columns pointing at the removed enum fall back to "no enum chosen"
+          // rather than holding a dangling id.
+          nodes: get().nodes.map((n) =>
+            n.data.columns.some((c) => c.enumId === enumId)
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    columns: n.data.columns.map((c) =>
+                      c.enumId === enumId ? { ...c, enumId: undefined } : c,
+                    ),
+                  },
+                }
+              : n,
+          ),
+          ...(request?.mode === 'edit' && request.enumId === enumId
+            ? { enumModalRequest: null }
+            : {}),
+        })
+      },
+
+      countEnumUsage: (enumId) =>
+        get().nodes.reduce(
+          (total, node) => total + node.data.columns.filter((c) => c.enumId === enumId).length,
+          0,
+        ),
+
       setSpaceHeld: (held) => set({ spaceHeld: held }),
-      setCtrlHeld: (held) => set({ ctrlHeld: held }),
+      setModHeld: (held) => set({ modHeld: held }),
+      setMacModifierOverride: (value) => set({ macModifierOverride: value }),
+      setShowCardinality: (value) => set({ showCardinality: value }),
 
       removeEdgeById: (edgeId) => {
         set({ edges: get().edges.filter((e) => e.id !== edgeId) })
@@ -673,14 +824,17 @@ export const useDiagrammerStore = create<DiagrammerState>()(
         })
       },
 
+      getExportData: () => {
+        const { nodes, edges, enums } = get()
+        const clean = stripRuntimeState(nodes)
+        return { nodes: clean, edges: withResolvedHandles(edges, clean), enums }
+      },
+
       importDiagram: (data) => {
-        const nodes = (data.nodes ?? []).map((n) => ({
-          ...n,
-          data: { ...n.data, constraints: n.data.constraints ?? [] },
-        }))
+        const nodes = stripRuntimeState(data.nodes ?? [])
         set({
           nodes,
-          edges: data.edges ?? [],
+          edges: withResolvedHandles(data.edges ?? [], nodes),
           enums: data.enums ?? [],
           relationRequest: null,
           newTableRelationRequest: null,
@@ -696,15 +850,27 @@ export const useDiagrammerStore = create<DiagrammerState>()(
     }),
     {
       name: 'diagrammer-der-storage',
-      partialize: (state) => ({ nodes: state.nodes, edges: state.edges, enums: state.enums }),
+      partialize: (state) => ({
+        nodes: state.nodes,
+        edges: state.edges,
+        enums: state.enums,
+        macModifierOverride: state.macModifierOverride,
+        showCardinality: state.showCardinality,
+      }),
       // Normalize diagrams saved before fields like `constraints`/`enums` existed.
       merge: (persistedState, currentState) => {
         const persisted = (persistedState ?? {}) as Partial<DiagrammerState>
-        const nodes = (persisted.nodes ?? []).map((n) => ({
-          ...n,
-          data: { ...n.data, constraints: n.data.constraints ?? [] },
-        }))
-        return { ...currentState, ...persisted, nodes, enums: persisted.enums ?? [] }
+        // Same repair as importing a file: a diagram saved before edge anchors
+        // were stored would otherwise come back with its wires on whatever
+        // sides React Flow picks.
+        const nodes = stripRuntimeState(persisted.nodes ?? [])
+        return {
+          ...currentState,
+          ...persisted,
+          nodes,
+          edges: withResolvedHandles(persisted.edges ?? [], nodes),
+          enums: persisted.enums ?? [],
+        }
       },
     },
   ),

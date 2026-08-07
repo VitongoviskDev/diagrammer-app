@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useDiagrammerStore } from '@/store'
 import { COLUMN_TYPES, type ColumnType, type TableColumn, type TableConstraint } from '@/types'
 import { invalidNameClasses, STARTS_WITH_DIGIT } from '@/lib/tableHelpers'
@@ -40,6 +40,9 @@ export function ColumnRow({ tableId, column: col, memberConstraints }: ColumnRow
   const requestFkAction = useDiagrammerStore((s) => s.requestFkAction)
   const enums = useDiagrammerStore((s) => s.enums)
   const openEnumModal = useDiagrammerStore((s) => s.openEnumModal)
+  const openEnumEditor = useDiagrammerStore((s) => s.openEnumEditor)
+
+  const selectedEnum = col.enumId ? enums.find((en) => en.id === col.enumId) : undefined
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -164,6 +167,22 @@ export function ColumnRow({ tableId, column: col, memberConstraints }: ColumnRow
               </SelectItem>
             </SelectContent>
           </Select>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="nodrag size-5 shrink-0 text-muted-foreground hover:text-foreground"
+            disabled={!selectedEnum}
+            onClick={() => selectedEnum && openEnumEditor(selectedEnum.id)}
+            title={
+              selectedEnum
+                ? `Ver e editar "${selectedEnum.name}": ${selectedEnum.options
+                    .map((o) => o.value)
+                    .join(', ')}`
+                : 'Selecione um enum para ver e editar'
+            }
+          >
+            <Pencil className="size-3" />
+          </Button>
         </div>
       )}
     </div>

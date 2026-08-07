@@ -4,6 +4,7 @@ import { useDiagrammerStore } from '@/store'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -13,7 +14,10 @@ import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 
 interface DraftOption {
+  /** Local-only key so rows stay stable while typing. */
   key: number
+  /** Set for options that already exist in the stored enum. */
+  id?: string
   label: string
   value: string
 }
@@ -29,17 +33,48 @@ function slugify(value: string) {
 
 export function EnumModal() {
   const enumModalRequest = useDiagrammerStore((s) => s.enumModalRequest)
+  const enums = useDiagrammerStore((s) => s.enums)
   const closeEnumModal = useDiagrammerStore((s) => s.closeEnumModal)
   const createEnum = useDiagrammerStore((s) => s.createEnum)
+  const updateEnum = useDiagrammerStore((s) => s.updateEnum)
 
   const open = enumModalRequest !== null
+  const editingId = enumModalRequest?.mode === 'edit' ? enumModalRequest.enumId : null
+  const editing = editingId ? enums.find((en) => en.id === editingId) : undefined
+
+  // A number selector, so editing table positions doesn't re-render the modal.
+  const usageCount = useDiagrammerStore((s) =>
+    editingId
+      ? s.nodes.reduce(
+          (total, node) =>
+            total + node.data.columns.filter((c) => c.enumId === editingId).length,
+          0,
+        )
+      : 0,
+  )
 
   const [name, setName] = useState('')
   const [options, setOptions] = useState<DraftOption[]>([newDraftOption(), newDraftOption()])
 
+  // Reloads the form whenever the modal is (re)opened. Reads the enum through
+  // getState() so that saving — which changes `enums` — can't reset the form
+  // out from under the user mid-edit.
   useEffect(() => {
-    setName('')
-    setOptions([newDraftOption(), newDraftOption()])
+    if (!enumModalRequest) return
+    if (enumModalRequest.mode === 'edit') {
+      const target = useDiagrammerStore
+        .getState()
+        .enums.find((en) => en.id === enumModalRequest.enumId)
+      setName(target?.name ?? '')
+      setOptions(
+        target?.options.length
+          ? target.options.map((o) => ({ key: nextKey++, id: o.id, label: o.label, value: o.value }))
+          : [newDraftOption()],
+      )
+    } else {
+      setName('')
+      setOptions([newDraftOption(), newDraftOption()])
+    }
   }, [enumModalRequest])
 
   if (!open) return null
@@ -57,19 +92,27 @@ export function EnumModal() {
 
   const handleSubmit = () => {
     if (!canSubmit) return
-    createEnum(
-      name.trim(),
-      options
-        .filter((o) => o.label.trim() && o.value.trim())
-        .map((o) => ({ label: o.label.trim(), value: o.value.trim() })),
-    )
+    const cleaned = options
+      .filter((o) => o.label.trim() && o.value.trim())
+      .map((o) => ({ id: o.id, label: o.label.trim(), value: o.value.trim() }))
+    if (editingId) updateEnum(editingId, name.trim(), cleaned)
+    else createEnum(name.trim(), cleaned.map(({ label, value }) => ({ label, value })))
   }
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && closeEnumModal()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Novo enum</DialogTitle>
+          <DialogTitle>
+            {editingId ? `Editar enum — ${editing?.name ?? ''}` : 'Novo enum'}
+          </DialogTitle>
+          {editingId && (
+            <DialogDescription>
+              {usageCount === 0
+                ? 'Nenhuma coluna usa este enum no momento.'
+                : `Usado por ${usageCount} coluna${usageCount > 1 ? 's' : ''} — as alterações valem para todas.`}
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         <div className="flex flex-col gap-1.5">
@@ -132,7 +175,7 @@ export function EnumModal() {
             Cancelar
           </Button>
           <Button disabled={!canSubmit} onClick={handleSubmit}>
-            Criar enum
+            {editingId ? 'Salvar alterações' : 'Criar enum'}
           </Button>
         </DialogFooter>
       </DialogContent>
