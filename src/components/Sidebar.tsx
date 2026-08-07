@@ -332,9 +332,16 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
 
   return (
-    <Panel position="top-right">
-      <div className="flex w-64 flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-md">
-        <div className="flex items-center gap-0.5 border-b border-border p-1">
+    <Panel position="center-left">
+      {/* Fixed height, not max-height: the panel keeps the same footprint
+          whatever the list holds, so switching tabs or filtering doesn't
+          resize it. Collapsed is the one exception — it shrinks to the tabs. */}
+      <div
+        className={`flex w-64 flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-md ${
+          collapsed ? '' : 'h-[70vh]'
+        }`}
+      >
+        <div className="flex shrink-0 items-center gap-0.5 border-b border-border p-1">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -363,7 +370,9 @@ export function Sidebar() {
         </div>
 
         {!collapsed && (
-          <div className="flex max-h-[60vh] flex-col gap-1 overflow-y-auto p-2">
+          // min-h-0 lets this flex child actually shrink, so the list scrolls
+          // inside the fixed-height card instead of stretching it.
+          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
             {tab === 'tables' && <TablesTab />}
             {tab === 'enums' && <EnumsTab />}
             {tab === 'relations' && (

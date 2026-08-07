@@ -291,6 +291,10 @@ interface DiagrammerState {
   macModifierOverride: boolean | null
   /** Whether relationship edges show their cardinality badge. */
   showCardinality: boolean
+  /** Board editing frozen: tables can't be moved, connected or selected by
+   *  clicking. Navigation (pan/zoom) stays free. Session-only, on purpose —
+   *  reopening a board you can't edit reads as broken. */
+  locked: boolean
   justCreatedTableId: string | null
   onNodesChange: (changes: NodeChange<TableNodeType>[]) => void
   onEdgesChange: (changes: EdgeChange<RelationshipEdgeType>[]) => void
@@ -336,6 +340,7 @@ interface DiagrammerState {
   setModHeld: (held: boolean) => void
   setMacModifierOverride: (value: boolean | null) => void
   setShowCardinality: (value: boolean) => void
+  setLocked: (value: boolean) => void
   removeEdgeById: (edgeId: string) => void
   requestRemoveEdge: (edgeId: string) => void
   startReconnecting: (state: ReconnectingState) => void
@@ -392,6 +397,7 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       modHeld: false,
       macModifierOverride: null,
       showCardinality: true,
+      locked: false,
       justCreatedTableId: null,
 
       onNodesChange: (changes) => {
@@ -727,6 +733,7 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       setModHeld: (held) => set({ modHeld: held }),
       setMacModifierOverride: (value) => set({ macModifierOverride: value }),
       setShowCardinality: (value) => set({ showCardinality: value }),
+      setLocked: (value) => set({ locked: value }),
 
       removeEdgeById: (edgeId) => {
         set({ edges: get().edges.filter((e) => e.id !== edgeId) })

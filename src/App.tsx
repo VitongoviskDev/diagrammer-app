@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   ConnectionMode,
-  Controls,
   Panel,
   ReactFlow,
   ReactFlowProvider,
@@ -34,6 +33,8 @@ import {
 } from '@/components/PaneContextMenu'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
 import { Sidebar } from '@/components/Sidebar'
+import { BoardControls } from '@/components/BoardControls'
+import { MAX_ZOOM, MIN_ZOOM } from '@/lib/zoom'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 
@@ -106,6 +107,7 @@ function Board() {
   const modHeld = useDiagrammerStore((s) => s.modHeld)
   const showCardinality = useDiagrammerStore((s) => s.showCardinality)
   const setShowCardinality = useDiagrammerStore((s) => s.setShowCardinality)
+  const locked = useDiagrammerStore((s) => s.locked)
 
   useGestureKeys()
   const rf = useReactFlow()
@@ -249,7 +251,7 @@ function Board() {
 
   const handleWrapperMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (!modHeld || e.button !== 0) return
+      if (locked || !modHeld || e.button !== 0) return
       // While an edge is selected, modifier+drag is reserved for reconnecting
       // its endpoints (via React Flow's own anchors) — not for moving tables.
       const hasSelectedEdge = useDiagrammerStore.getState().edges.some((ed) => ed.selected)
@@ -266,7 +268,7 @@ function Board() {
       window.addEventListener('mousemove', handleWindowMouseMove)
       window.addEventListener('mouseup', handleWindowMouseUp)
     },
-    [modHeld, rf, handleWindowMouseMove, handleWindowMouseUp],
+    [locked, modHeld, rf, handleWindowMouseMove, handleWindowMouseUp],
   )
 
   useEffect(
@@ -371,13 +373,19 @@ function Board() {
         reconnectRadius={18}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
+        // Locking freezes editing only — panning and zooming stay available.
+        nodesDraggable={!locked}
+        nodesConnectable={!locked}
+        elementsSelectable={!locked}
         multiSelectionKeyCode="Shift"
         // React Flow's own auto-pan re-centers a focused node with no duration,
         // which teleports the viewport and cuts off the animated pan the
         // sidebar triggers. The sidebar is the only thing that moves us to a
         // table, so let it own the transition.
         autoPanOnNodeFocus={false}
-        selectionOnDrag={!spaceHeld && !modHeld}
+        selectionOnDrag={!spaceHeld && !modHeld && !locked}
         selectionMode={SelectionMode.Full}
         panOnDrag={spaceHeld}
         connectionMode={ConnectionMode.Loose}
@@ -385,8 +393,8 @@ function Board() {
         fitView
       >
         <Background />
-        <Controls />
-        <Panel position="top-left">
+        <BoardControls />
+        <Panel position="top-center">
           <div className="flex items-center gap-2 rounded-lg border border-border bg-card p-2 shadow-md">
             <h1 className="px-1 text-sm font-semibold">Diagrammer</h1>
             <Button size="sm" className="gap-1" onClick={handleAddTable}>
@@ -447,8 +455,9 @@ function Board() {
           </div>
         </Panel>
         <Sidebar />
+        {/* bottom-center, since the toolbar now owns the top-center slot. */}
         {linkingFromNode && (
-          <Panel position="top-center">
+          <Panel position="bottom-center">
             <div className="flex items-center gap-2 rounded-lg border border-primary bg-card px-3 py-1.5 text-sm shadow-md">
               <Waypoints className="size-4 text-primary" />
               Selecione a tabela para relacionar com{' '}
