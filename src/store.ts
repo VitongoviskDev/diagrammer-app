@@ -330,11 +330,13 @@ interface DiagrammerState {
    *  reopening a board you can't edit reads as broken. */
   locked: boolean
   justCreatedTableId: string | null
+  justCreatedColumnId: string | null
   onNodesChange: (changes: NodeChange<BoardNode>[]) => void
   onEdgesChange: (changes: EdgeChange<RelationshipEdgeType>[]) => void
   onConnect: (connection: { source: string | null; target: string | null }) => void
   addTable: (position?: XYPosition) => string
   clearJustCreatedTable: () => void
+  clearJustCreatedColumn: () => void
   moveNodesTo: (updates: { id: string; position: XYPosition }[]) => void
   removeTable: (id: string) => void
   selectTable: (tableId: string, additive?: boolean) => void
@@ -443,6 +445,7 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       showCardinality: true,
       locked: false,
       justCreatedTableId: null,
+      justCreatedColumnId: null,
 
       // Groups ride along in the array handed to React Flow but live in their
       // own slice, so their position/size changes are split off here instead
@@ -509,6 +512,8 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       },
 
       clearJustCreatedTable: () => set({ justCreatedTableId: null }),
+
+      clearJustCreatedColumn: () => set({ justCreatedColumnId: null }),
 
       moveNodesTo: (updates) => {
         const byId = new Map(updates.map((u) => [u.id, u.position]))
@@ -584,14 +589,16 @@ export const useDiagrammerStore = create<DiagrammerState>()(
       },
 
       addColumn: (tableId) => {
+        const col = newColumn()
         set({
+          justCreatedColumnId: col.id,
           nodes: get().nodes.map((n) =>
             n.id === tableId
               ? {
                   ...n,
                   data: {
                     ...n.data,
-                    columns: [...n.data.columns, newColumn()],
+                    columns: [...n.data.columns, col],
                   },
                 }
               : n,

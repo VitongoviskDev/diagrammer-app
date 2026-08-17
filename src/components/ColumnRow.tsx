@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useDiagrammerStore } from '@/store'
 import { COLUMN_TYPES, type ColumnType, type TableColumn, type TableConstraint } from '@/types'
@@ -34,6 +35,8 @@ interface ColumnRowProps {
 /** One column's editable row (name, type, enum picker, PK/FK/N/U flags, delete).
  *  Shared by the compact TableNode card and the full TableDetailModal. */
 export function ColumnRow({ tableId, column: col, memberConstraints }: ColumnRowProps) {
+  const addColumn = useDiagrammerStore((s) => s.addColumn)
+  const removeColumn = useDiagrammerStore((s) => s.removeColumn)
   const updateColumn = useDiagrammerStore((s) => s.updateColumn)
   const formatColumnName = useDiagrammerStore((s) => s.formatColumnName)
   const requestRemoveColumn = useDiagrammerStore((s) => s.requestRemoveColumn)
@@ -41,6 +44,21 @@ export function ColumnRow({ tableId, column: col, memberConstraints }: ColumnRow
   const enums = useDiagrammerStore((s) => s.enums)
   const openEnumModal = useDiagrammerStore((s) => s.openEnumModal)
   const openEnumEditor = useDiagrammerStore((s) => s.openEnumEditor)
+  const justCreatedColumnId = useDiagrammerStore((s) => s.justCreatedColumnId)
+  const clearJustCreatedColumn = useDiagrammerStore((s) => s.clearJustCreatedColumn)
+
+  const nameInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (justCreatedColumnId === col.id) {
+      const timer = window.setTimeout(() => {
+        nameInputRef.current?.focus()
+        nameInputRef.current?.select()
+        clearJustCreatedColumn()
+      }, 60)
+      return () => window.clearTimeout(timer)
+    }
+  }, [justCreatedColumnId, col.id, clearJustCreatedColumn])
 
   const selectedEnum = col.enumId ? enums.find((en) => en.id === col.enumId) : undefined
 
@@ -48,11 +66,26 @@ export function ColumnRow({ tableId, column: col, memberConstraints }: ColumnRow
     <div className="flex flex-col gap-0.5">
       <div className="flex items-center gap-1">
         <input
+          ref={nameInputRef}
           className={`nodrag min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs outline-none focus:border-border focus:bg-background ${invalidNameClasses(STARTS_WITH_DIGIT.test(col.name))}`}
           value={col.name}
           placeholder="coluna"
           onChange={(e) => updateColumn(tableId, col.id, { name: e.target.value })}
-          onBlur={() => formatColumnName(tableId, col.id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              if (col.name.trim() !== '') {
+                addColumn(tableId)
+              }
+            }
+          }}
+          onBlur={() => {
+            if (col.name.trim() === '') {
+              removeColumn(tableId, col.id)
+            } else {
+              formatColumnName(tableId, col.id)
+            }
+          }}
           title={STARTS_WITH_DIGIT.test(col.name) ? 'Nome não pode começar com número' : undefined}
         />
         <select
