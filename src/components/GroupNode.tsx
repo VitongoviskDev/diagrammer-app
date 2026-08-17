@@ -45,7 +45,7 @@ export function GroupNode({ id, data }: NodeProps<GroupNodeType>) {
         }}
       />
 
-      <div className={`size-full rounded-xl border-2 border-dashed ${palette.surface}`} />
+      <div className={`size-full rounded-xl rounded-tl-none border-2 border-dashed ${palette.surface}`} />
 
       {/* Folder-style tab riding on top of the box's left edge. max-w-[80%]
           clamps it to the box, and the name truncates once it fills that. */}
@@ -79,9 +79,8 @@ export function GroupNode({ id, data }: NodeProps<GroupNodeType>) {
             {GROUP_COLORS.map((color) => (
               <button
                 key={color}
-                className={`size-4 rounded-full ${GROUP_COLOR_CLASSES[color].swatch} ${
-                  data.color === color ? 'ring-2 ring-foreground ring-offset-1' : ''
-                }`}
+                className={`size-4 rounded-full ${GROUP_COLOR_CLASSES[color].swatch} ${data.color === color ? 'ring-2 ring-foreground ring-offset-1' : ''
+                  }`}
                 onClick={() => {
                   updateGroup(id, { color })
                   setPickerOpen(false)
